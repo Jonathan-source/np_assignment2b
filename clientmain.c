@@ -131,13 +131,13 @@ int main(int argc, char * argv[])
         */
         if(!calculate_calcProtocol)
         {
-            // Convert calcProtocol.
+            // Convert calcProtocol to host byte order.
             host_byte_order(pcalcProt);
 
             // Compute assignment.
             compute_assignment(pcalcProt);
 
-            // Convert back.
+            // Convert calcProtocol to network byte order.
             network_byte_order(pcalcProt);
 
             calculate_calcProtocol = COMPLETED;
@@ -157,7 +157,6 @@ int main(int argc, char * argv[])
             } 
             printf("[+] calcProtocol [%d bytes] was sent to the server.\n", byteSent);    
 
-
             /* 
             * Sendto: send calcProtocol back to the server.
             */
@@ -171,6 +170,7 @@ int main(int argc, char * argv[])
             send_calcProtocol = COMPLETED;
             all_jobs_completed = TRUE;
         }
+
 
     } // End of main loop.
 
