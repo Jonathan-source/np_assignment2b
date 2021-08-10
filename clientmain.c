@@ -12,14 +12,14 @@
 #include "calcLib.h"
 #include "protocol.h"
 
-typedef struct calcMessage calcMessage_t;
-typedef struct calcProtocol calcProtocol_t;
-
 #define MAXLINE 1024
 #define TRUE 1
 #define FALSE 0
 #define UNCOMPLETED 0
 #define COMPLETED 1
+
+typedef struct calcMessage calcMessage_t;
+typedef struct calcProtocol calcProtocol_t;
 
 void host_byte_order(calcProtocol_t * pcalcProt);
 void network_byte_order(calcProtocol_t * pcalcProt);
@@ -111,19 +111,21 @@ int main(int argc, char * argv[])
             */
             byteRcvd = recvfrom(sockfd, pcalcProt, sizeof(calcProtocol_t), 0, (struct sockaddr*) &servAddr, &servLen);
             if (byteRcvd < 0) {
-                perror("recvfrom error");
+                perror("recvfrom()\n");
             } 
             else if (byteRcvd == 16) {
                 printf("[-] Server did not support the protocol.\n");
                 exit(EXIT_FAILURE);
-            }           
-            printf("[+] calcProtocol [%d bytes] was received from the server:\n\n", byteRcvd);
+            }
+            else {           
+                printf("[+] calcProtocol [%d bytes] was received from the server:\n\n", byteRcvd);
       
-            printf("[calcProtocol]\nArith:%d\nFloat1:%lf\nFloat2:%lf\nInt1:%d\nInt2:%d\n\n", 
-                ntohl(pcalcProt->arith), pcalcProt->flValue1, pcalcProt->flValue2, 
-                ntohl(pcalcProt->inValue1), ntohl(pcalcProt->inValue2));
+                printf("[calcProtocol]\nArith:%d\nFloat1:%lf\nFloat2:%lf\nInt1:%d\nInt2:%d\n\n", 
+                    ntohl(pcalcProt->arith), pcalcProt->flValue1, pcalcProt->flValue2, 
+                    ntohl(pcalcProt->inValue1), ntohl(pcalcProt->inValue2));
 
-            recieve_calcProtocol = COMPLETED;
+                recieve_calcProtocol = COMPLETED;
+            }
         }
 
         /*
@@ -163,12 +165,14 @@ int main(int argc, char * argv[])
             byteRcvd = recvfrom(sockfd, &message, sizeof(calcMessage_t), 0, (struct sockaddr*) &servAddr, &servLen);
             if (byteRcvd < 0) {
                 perror("recvfrom error");
-            }           
-            printf("[+] calcMessage [%d bytes] was received from the server: calcMessage type = %d, message = %d.\n", byteRcvd, 
-                ntohs(message.type), ntohl(message.message));
+            } 
+            else {          
+                printf("[+] calcMessage [%d bytes] was received from the server: calcMessage type = %d, message = %d.\n", byteRcvd, 
+                    ntohs(message.type), ntohl(message.message));
 
-            send_calcProtocol = COMPLETED;
-            all_jobs_completed = TRUE;
+                send_calcProtocol = COMPLETED;
+                all_jobs_completed = TRUE;
+            }
         }
 
 
