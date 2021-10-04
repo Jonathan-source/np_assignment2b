@@ -1,6 +1,8 @@
 #include <stdlib.h>
 #include <stdio.h>  
-#include <cstring>     
+#include <cstring>  
+#include <math.h>
+#include <errno.h>
 #include <arpa/inet.h>  
 #include <sys/types.h> 		
 #include <sys/socket.h>	
@@ -8,7 +10,6 @@
 #include <netinet/in.h>	
 #include <pthread.h>
 #include <netdb.h>
-#include <math.h>
 #include <signal.h>
 #include <sys/time.h>
 
@@ -17,8 +18,8 @@
 #include "protocol.h"
 
 #define BUFFER_SIZE 256
-#define CALC_MESSAGE 12
-#define CALC_PROTOCOL 50
+#define CALC_MESSAGE 12		// sizeof(calcMessage_t);
+#define CALC_PROTOCOL 50	// sizeof(calcProtocol_t);
 #define TRUE 1
 #define FALSE 0
 
@@ -31,33 +32,22 @@ typedef struct client {
   struct timeval lastMessage;
 } client_t;
 
-typedef struct node {
-	client_t * pclient;
-	node* next;
-	node* prev;
-} node_t;
-
 // Global variables.
-node_t* head = NULL;
+client_t ** g_clients = NULL;
+int g_num_clients = 0;
+int g_arr_size = 10;
 static uint32_t ID = 0;
 
-// Linked list related methods.
-node_t * create_node(client_t * pclient);
-void add_node(node_t * node);
-node_t * find_node(uint32_t id);
-void remove_node_by(uint32_t id);
-void print_list();
-void deallocate_node(node_t * node);
-void deallocate_client(client_t * client);
-void free_list();
 
 // Server related methods.
+void add_client(client_t * pclient);
+client_t * find_client(uint32_t id);
 int handle_calcMessage(calcMessage_t * pcalcMsg);
 void host_byte_order(calcProtocol_t * pcalcProt);
 void network_byte_order(calcProtocol_t * pcalcProt);
 calcProtocol_t * create_calcProtocol();
 void precalculate_calcProtocol(calcProtocol_t * pcalcProt);
-calcMessage_t * validate_assignment(node_t * ref_node, calcProtocol_t * result, const char * fromAddress);
+calcMessage_t * validate_assignment(client_t * pclient, calcProtocol_t * result, const char * fromAddress);
 
 
 
@@ -67,25 +57,24 @@ void checkJobbList(int signum)
 
 	if(signum == SIGALRM)
 	{
-		free_list();
-		if(head != NULL)
-  		{
-			node_t * current = head;
-    		struct timeval currentTime;
+    	struct timeval currentTime;
 
-			while (current)
-    		{
+		for(int i = 0; i < g_arr_size; i++)
+		{
+			if(g_clients[i] != NULL)
+			{
 				gettimeofday(&currentTime, NULL);
-        		int deltaTime = (int)(currentTime.tv_sec - current->pclient->lastMessage.tv_sec);
-        		if(fabs(deltaTime) > 5) 
+        		int deltaTime = (int)((currentTime.tv_sec - g_clients[i]->lastMessage.tv_sec));
+        		if(deltaTime >= 10) 
 				{
-					printf("\nremove id: %d\n", current->pclient->pcalcProt->id);
-          			remove_node_by(current->pclient->pcalcProt->id);
-        		} 
-        		current = current->next;
-    		}
-  		}
-	}
+					printf("[Info] connection timeout, client with id %d considered lost.\n", g_clients[i]->pcalcProt->id);
+					free(g_clients[i]);
+					g_clients[i] = NULL;
+					g_num_clients--;
+        		}
+			}
+    	}
+	}	
 }
 
 
@@ -135,7 +124,8 @@ int main(int argc, char * argv[])
     /* 
     * Bind: associate the parent socket with a port. 
     */
-    if(bind(sockfd, (struct sockaddr * ) &serverAddr, sizeof(serverAddr)) < 0) {
+    int status = bind(sockfd, (struct sockaddr * ) &serverAddr, sizeof(serverAddr));
+	if(status < 0) {
 	    perror("bind()");
         exit(EXIT_FAILURE);
     }
@@ -144,11 +134,11 @@ int main(int argc, char * argv[])
     * SIGALRM: configure alarm time. 
     */
 	struct itimerval alarmTime;
-	/* Configure the timer to expire after 5 sec... */
-	alarmTime.it_interval.tv_sec = 5;
+	/* Configure the timer to expire after 1 sec... */
+	alarmTime.it_interval.tv_sec = 1;
 	alarmTime.it_interval.tv_usec = 0;
-	/* ... and every 5 sec after that. */
-	alarmTime.it_value.tv_sec = 5;
+	/* ... and every 1 sec after that. */
+	alarmTime.it_value.tv_sec = 1;
 	alarmTime.it_value.tv_usec = 0;
 
 	signal(SIGALRM, checkJobbList);
@@ -159,21 +149,25 @@ int main(int argc, char * argv[])
     struct sockaddr_in cliAddr;
     socklen_t cliLen = sizeof(cliAddr);
 
+	g_clients = (client_t**)malloc(sizeof(client_t*) * g_arr_size);
+
 
     /* 
     * Main loop: wait for and handle datagram.
     */
     while(1)
     { 
+
         /*
         * Recvfrom: receive UDP datagram from client(s).
         */
 		memset(&cliAddr, 0, sizeof(cliAddr));
         byteRcvd = recvfrom(sockfd, pflexible, sizeof(calcProtocol_t), 0, (struct sockaddr*) &cliAddr, &cliLen);
-        if (byteRcvd < 0) {
+        if (byteRcvd <= 0) {
             perror("recvfrom()\n");
         } 
 		printf("\n[Info] received datagram [%d bytes] from %s:%d\n", byteRcvd, inet_ntoa(cliAddr.sin_addr), htons(cliAddr.sin_port));
+
 
         /*
         * Handle datagram by size.
@@ -195,7 +189,7 @@ int main(int argc, char * argv[])
 
 				// Send protocol to client.
 				byteSent = sendto(sockfd, client->pcalcProt, sizeof(calcProtocol_t), 0, (const struct sockaddr *) &cliAddr, sizeof(cliAddr));
-				if (byteRcvd < 0) {
+				if (byteRcvd <= 0) {
             		perror("sendto()\n");
         		}
 				printf("[Info] sent datagram [%d bytes] to %s:%d\n", byteSent, inet_ntoa(cliAddr.sin_addr), htons(cliAddr.sin_port));		
@@ -204,17 +198,17 @@ int main(int argc, char * argv[])
 				host_byte_order(client->pcalcProt);
 				precalculate_calcProtocol(client->pcalcProt);
 				
-				// Create and add new node to the list.
-				node_t * node = create_node(client);
-				add_node(node);
-
 				// Timestamp client.
 				gettimeofday(&client->lastMessage, NULL);
+
+				// Add client to list.
+				add_client(client);
+
 			}
 			else // Protocol not supported.
 			{
 				byteSent = sendto(sockfd, pcalcMsgHolder, sizeof(calcMessage_t), 0, (const struct sockaddr *) &cliAddr, sizeof(cliAddr));
-				if (byteRcvd < 0) {
+				if (byteRcvd <= 0) {
             		perror("sendto()\n");
         		} 
 			  	printf("[Info] protocol not supported. Datagram [%d bytes] were sent back to %s:%d\n", byteSent, inet_ntoa(cliAddr.sin_addr), htons(cliAddr.sin_port));	
@@ -230,18 +224,37 @@ int main(int argc, char * argv[])
       		sprintf(comprAddress, "%s:%d", inet_ntoa(cliAddr.sin_addr), htons(cliAddr.sin_port));
 		  
       		// Find node / client.
-      		node_t * pnode = find_node(pcalcProtHolder->id);
+      		client_t * pclient = find_client(pcalcProtHolder->id);
 
 			// Compare result if node was found.
-			if(pnode != NULL)
+			if(pclient != NULL)
 			{
-				calcMessage_t * pcalcMsgHolder = validate_assignment(pnode, pcalcProtHolder, comprAddress);
+				calcMessage_t * pcalcMsgHolder = validate_assignment(pclient, pcalcProtHolder, comprAddress);
 
 	    		byteSent = sendto(sockfd, pcalcMsgHolder, sizeof(calcMessage_t), 0, (const struct sockaddr *)&cliAddr, sizeof(cliAddr));
-				if (byteRcvd < 0) {
+				if (byteRcvd <= 0) {
             		perror("sendto()\n");
         		} 
    				printf("[Info] sent datagram [%d bytes] to %s:%d\n", byteSent, inet_ntoa(cliAddr.sin_addr), htons(cliAddr.sin_port));
+
+				// Client has completed the assignment, remove it from list.
+				for(int i = 0; i < g_arr_size; i++)
+				{
+					if(g_clients[i] == pclient)
+					{
+						free(g_clients[i]);
+						g_clients[i] = NULL;
+						g_num_clients--;
+						break;
+					}
+				}
+			}
+			else // Client were not in the list (probably a lost client).
+			{
+				byteSent = sendto(sockfd, "ERROR TO\n", sizeof("ERROR TO\n"), 0, (const struct sockaddr *)&cliAddr, sizeof(cliAddr));
+				if (byteRcvd <= 0) {
+            		perror("sendto()\n");
+        		} 
 			}
 		}
 
@@ -255,7 +268,12 @@ int main(int argc, char * argv[])
     */
 	if(pflexible != NULL)
 		free(pflexible);
-	free_list();
+
+	for(int i = 0; i < g_arr_size; i++)
+	{
+		if(g_clients[i] != NULL)
+			free(g_clients[i]);
+	}
 
     close(sockfd);
 
@@ -264,21 +282,64 @@ int main(int argc, char * argv[])
 
 
 
+/*
+* Method for adding a new client to the array. If the array is full, it will be expanded.
+*/
+void add_client(client_t * pclient)
+{
+	// Check if the array needs to be expanded (double size).
+	if(g_num_clients == g_arr_size)
+	{
+		g_arr_size = g_arr_size * 2;
+		g_clients = (client_t**) realloc(g_clients, sizeof(client_t*) * g_arr_size);
+	}
+
+	// Find an empty spot for the new client.
+	for(int i = 0; i < g_arr_size; i++)
+	{
+		if(g_clients[i] == NULL)
+		{
+			g_clients[i] = pclient;
+			g_num_clients++;
+			break;
+		}
+	}
+}
+
+
+/*
+* Method for finding a client with specific id.
+*/
+client_t * find_client(uint32_t id)
+{
+	client_t * pclient = NULL;
+	for(int i = 0; i < g_arr_size; i++)
+	{
+		if(g_clients[i]->pcalcProt->id == id)
+		{
+			pclient =  g_clients[i];
+			break;
+		}
+	}
+
+	return pclient;
+}
+
 
 /*
 * Method for validating the assignment and create a calcMessage based on result.
 */
-calcMessage_t * validate_assignment(node_t * ref_node, calcProtocol_t * result, const char * fromAddress)
+calcMessage_t * validate_assignment(client_t * pclient, calcProtocol_t * result, const char * fromAddress)
 {
 	calcMessage_t * pcalcMsg = (calcMessage_t*) malloc(sizeof(calcMessage_t*)); 
 
 	char refAddress[BUFFER_SIZE];
     memset(&refAddress, 0, sizeof(refAddress));
-    sprintf(refAddress, "%s:%d", inet_ntoa(ref_node->pclient->addr.sin_addr), htons(ref_node->pclient->addr.sin_port));
+    sprintf(refAddress, "%s:%d", inet_ntoa(pclient->addr.sin_addr), htons(pclient->addr.sin_port));
 			
 	if(strcmp(refAddress, fromAddress) == 0) 
 	{
-    	calcProtocol_t * ref = ref_node->pclient->pcalcProt;
+    	calcProtocol_t * ref = pclient->pcalcProt;
 		
 		if(result->arith < 5) // Int values.  
   		{
@@ -434,151 +495,4 @@ void network_byte_order(calcProtocol_t * pcalcProt)
     pcalcProt->inResult         = htonl(pcalcProt->inResult);       // int32_t
 
     // double-types can be ignored.
-}
-
-
-/*
- * Method to create a new node.
- */
-node_t * create_node(client_t * pclient)
-{
-	node_t * newnode = (node_t*)malloc(sizeof(node_t));
-	newnode->pclient = pclient;
-	newnode->next = NULL;
-	newnode->prev = NULL;
-	return newnode;
-} // validated.
-
-
-/*
- * Method for inserting a node (at the end).
- */
-void add_node(node_t * node)
-{
-	if (head != NULL)
-	{
-		node_t* it = head;
-		while (it->next != NULL)
-			it = it->next;
-		
-		it->next = node;
-		node->prev = it;
-	}
-	else
-		head = node;
-} // validated.
-
-
-/*
- * Method for finding a specific node. Returns NULL if node wasn't found.
- */
-node_t * find_node(uint32_t id)
-{
-	node_t * it = head;
-	
-	if (head == NULL || it->pclient->pcalcProt->id == id) return it;
-	
-	while (it->next != NULL)
-	{
-		it = it->next;
-		if (it->pclient->pcalcProt->id == id) 
-			return it;
-	}
-	
-	return NULL;
-} // validated.
-
-
-/*
- * Method for removing a node by data.
- */
-void remove_node_by(uint32_t id)
-{
-	// Check if list is empty.
-	if (head == NULL) return;
-
-	// Find node.
-	node_t* node = find_node(id);
-	
-	if (node != NULL)
-	{
-		if(node == head) // if node is head.
-			head = node->next;
-
-		if (node->next != NULL)
-			node->next->prev = node->prev;
-
-		if (node->prev != NULL)
-			node->prev->next = node->next;
-
-		deallocate_node(node);
-	}
-} // validated.
-
-
-/*
- * Method for printing list.
- */
-void print_list()
-{
-	if (head != NULL)
-	{
-		printf("\n");
-		node_t* temp = head;
-		while (temp->next != NULL) {
-			printf("%d - ", temp->pclient->pcalcProt->id);
-			temp = temp->next;
-		}
-		printf("%d - ", temp->pclient->pcalcProt->id);
-	}
-	else
-		printf("\n -empty list- ");
-} // validated.
-
-
-/*
- * Method for deallocating a single node.
- */
-void deallocate_node(node_t * node)
-{
-    if(node != NULL)
-    {
-        deallocate_client(node->pclient);
-        free(node);
-    }
-}
-
-
-/*
- * Method for deallocating a single client.
- */
-void deallocate_client(client_t * client)
-{
-	if(client != NULL)
-    {
-        if(client->pcalcProt != NULL)
-            free(client->pcalcProt);
-
-        free(client);
-	}
-}
-
-
-/*
- * Method for deallocating the entire list.
- */
-void free_list()
-{
-	if (head != NULL)
-	{
-		node_t* pcalcProt = head;
-
-		while(pcalcProt->next != NULL)
-		{
-			pcalcProt = pcalcProt->next;
-			deallocate_node(pcalcProt->prev);
-		}
-		deallocate_node(pcalcProt);
-		head = NULL;
-	}
 }
